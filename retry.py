@@ -4,6 +4,7 @@ Runs from GitHub Actions on a schedule. Each run makes at most one launch
 request, with the SDK's automatic retries turned off. Prints SUCCESS / EXISTS /
 WAIT and writes `result=<value>` to GITHUB_OUTPUT so the workflow can react.
 """
+import json
 import os
 import sys
 
@@ -48,26 +49,40 @@ def main() -> int:
         set_output("exists")
         return 0
 
-    ad = identity.list_availability_domains(compartment).data[0].name
+    # Look up AD / subnet / image once and cache them (A1_CACHE), so each try is only 2 API calls.
+    cache_path = os.environ.get("A1_CACHE")
+    cached = {}
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            cached = json.load(f)
+    if cached:
+        ad, subnet_id = cached["ad"], cached["subnet_id"]
+        image_id, image_name = cached["image_id"], cached["image_name"]
+    else:
+        ad = identity.list_availability_domains(compartment).data[0].name
 
-    subnets = [s for s in network.list_subnets(compartment).data if s.display_name == SUBNET_NAME]
-    if not subnets:
-        print(f"Subnet {SUBNET_NAME} not found")
-        return 1
-    subnet_id = subnets[0].id
+        subnets = [s for s in network.list_subnets(compartment).data if s.display_name == SUBNET_NAME]
+        if not subnets:
+            print(f"Subnet {SUBNET_NAME} not found")
+            return 1
+        subnet_id = subnets[0].id
 
-    images = compute.list_images(
-        compartment,
-        operating_system="Canonical Ubuntu",
-        operating_system_version="24.04",
-        shape=SHAPE,
-        sort_by="TIMECREATED",
-        sort_order="DESC",
-    ).data
-    if not images:
-        print("No Ubuntu 24.04 ARM image found")
-        return 1
-    image = images[0]
+        images = compute.list_images(
+            compartment,
+            operating_system="Canonical Ubuntu",
+            operating_system_version="24.04",
+            shape=SHAPE,
+            sort_by="TIMECREATED",
+            sort_order="DESC",
+        ).data
+        if not images:
+            print("No Ubuntu 24.04 ARM image found")
+            return 1
+        image_id, image_name = images[0].id, images[0].display_name
+        if cache_path:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"ad": ad, "subnet_id": subnet_id, "image_id": image_id,
+                           "image_name": image_name}, f)
 
     with open(os.path.join(os.path.dirname(__file__), "hermes_key.pub"), encoding="utf-8") as f:
         ssh_key = f.read().strip()
@@ -80,19 +95,22 @@ def main() -> int:
         shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=OCPUS, memory_in_gbs=MEMORY_GB
         ),
-        source_details=oci.core.models.InstanceSourceViaImageDetails(image_id=image.id),
+        source_details=oci.core.models.InstanceSourceViaImageDetails(image_id=image_id),
         create_vnic_details=oci.core.models.CreateVnicDetails(
             subnet_id=subnet_id, assign_public_ip=True
         ),
         metadata={"ssh_authorized_keys": ssh_key},
     )
 
-    print(f"Trying {SHAPE} {OCPUS:g} OCPU / {MEMORY_GB:g} GB in {ad} with {image.display_name}")
+    print(f"Trying {SHAPE} {OCPUS:g} OCPU / {MEMORY_GB:g} GB in {ad} with {image_name}")
     try:
         result = compute.launch_instance(details).data
     except oci.exceptions.ServiceError as e:
         print(f"Not yet: {e.status} {e.code} - {e.message}")
-        if e.status in (429, 500, 503) or "capacity" in str(e.message).lower():
+        if e.status == 429:
+            set_output("toomany")
+            return 0
+        if e.status in (500, 503) or "capacity" in str(e.message).lower():
             set_output("wait")
             return 0
         return 1  # anything else (bad config, limits) should fail loudly
@@ -103,4 +121,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except oci.exceptions.ServiceError as err:
+        if err.status == 429:  # rate limited during a lookup: back off, don't fail
+            print(f"Not yet: 429 {err.code} - {err.message}")
+            set_output("toomany")
+            sys.exit(0)
+        raise
