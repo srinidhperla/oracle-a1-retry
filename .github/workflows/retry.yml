@@ -2,7 +2,8 @@ name: oracle-a1-retry
 
 on:
   schedule:
-    - cron: "*/10 * * * *" # GitHub may run it a few minutes late; that's fine
+    # Every 10 min at :03, :13, :23... (off the busy top-of-hour slots GitHub delays/drops)
+    - cron: "3-59/10 * * * *"
   workflow_dispatch:
 
 permissions:
