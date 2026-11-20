@@ -41,11 +41,13 @@ def main() -> int:
     network = oci.core.VirtualNetworkClient(config, retry_strategy=no_retry)
     identity = oci.identity.IdentityClient(config, retry_strategy=no_retry)
 
-    # Stop if the server already exists (any state except terminated).
-    instances = compute.list_instances(compartment, display_name=SERVER_NAME).data
-    alive = [i for i in instances if i.lifecycle_state not in ("TERMINATED", "TERMINATING")]
+    # Stop if ANY A1 server already exists, whatever its name (e.g. one made by hand in the
+    # console). A second A1 server would go over the Always Free limit.
+    instances = oci.pagination.list_call_get_all_results(compute.list_instances, compartment).data
+    alive = [i for i in instances
+             if i.shape == SHAPE and i.lifecycle_state not in ("TERMINATED", "TERMINATING")]
     if alive:
-        print(f"{SERVER_NAME} already exists: {alive[0].lifecycle_state}")
+        print(f"An A1 server already exists ({alive[0].display_name}): {alive[0].lifecycle_state}")
         set_output("exists")
         return 0
 
