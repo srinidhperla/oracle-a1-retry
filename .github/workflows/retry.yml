@@ -37,6 +37,8 @@ jobs:
           OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
           OCI_KEY: ${{ secrets.OCI_KEY }}
           OCI_REGION: ap-hyderabad-1
+          A1_OCPUS: "2"       # Always Free max
+          A1_MEMORY_GB: "12"  # Always Free max
 
       - name: Tell me and stop retrying
         if: steps.launch.outputs.result == 'success' || steps.launch.outputs.result == 'exists'
