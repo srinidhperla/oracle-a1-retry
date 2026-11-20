@@ -1,0 +1,49 @@
+name: oracle-a1-retry
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # GitHub may run it a few minutes late; that's fine
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+concurrency:
+  group: oracle-a1-retry
+  cancel-in-progress: false
+
+jobs:
+  try-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -q -r requirements.txt
+
+      - id: launch
+        run: python retry.py
+        env:
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_KEY: ${{ secrets.OCI_KEY }}
+          OCI_REGION: ap-hyderabad-1
+
+      - name: Tell me and stop retrying
+        if: steps.launch.outputs.result == 'success' || steps.launch.outputs.result == 'exists'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Oracle big server (hermes-server) is created" \
+            --body "The A1 server was created (or already exists). Retry workflow is now disabled. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh workflow disable retry.yml --repo "$GITHUB_REPOSITORY"
